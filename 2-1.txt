@@ -1,0 +1,188 @@
+2-1
+#include <iostream>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <list>
+#include <chrono>
+#include <atomic>
+#include <memory>
+#include <vector>
+
+using namespace std;
+
+constexpr int THRESHOLD = 5; // 임계치
+
+struct Process {
+    string name;
+    bool isForeground;
+};
+
+struct StackNode {
+    list<Process> processes;
+    shared_ptr<StackNode> next;
+
+    StackNode() : next(nullptr) {}
+};
+
+class ProcessStack {
+public:
+    ProcessStack() : top(nullptr), promotePointer(nullptr) {}
+
+    void enqueue(const Process& process) {
+        lock_guard<mutex> lock(mtx);
+        if (process.isForeground) {
+            if (!top) {
+                top = make_shared<StackNode>();
+            }
+            top->processes.push_back(process);
+        } else {
+            auto node = getBottomNode();
+            node->processes.push_back(process);
+        }
+        promote();
+        split_n_merge();
+    }
+
+    Process dequeue() {
+        lock_guard<mutex> lock(mtx);
+        if (top && !top->processes.empty()) {
+            Process process = top->processes.front();
+            top->processes.pop_front();
+            if (top->processes.empty()) {
+                top = top->next;
+            }
+            promote();
+            return process;
+        }
+        return {"", false}; // 빈 프로세스 반환
+    }
+
+    void printStatus() {
+        lock_guard<mutex> lock(mtx);
+        auto node = top;
+        while (node) {
+            cout << "Stack Node - Processes: ";
+            for (const auto& p : node->processes) {
+                cout << p.name << " ";
+            }
+            cout << endl;
+            node = node->next;
+        }
+    }
+
+private:
+    shared_ptr<StackNode> top;
+    shared_ptr<StackNode> promotePointer;
+    mutex mtx;
+
+    shared_ptr<StackNode> getBottomNode() {
+        if (!top) {
+            top = make_shared<StackNode>();
+        }
+        auto node = top;
+        while (node->next) {
+            node = node->next;
+        }
+        if (!node->next) {
+            node->next = make_shared<StackNode>();
+        }
+        return node;
+    }
+
+    void promote() {
+        if (!promotePointer) {
+            promotePointer = getBottomNode();
+        }
+        auto node = promotePointer;
+        if (node && !node->processes.empty()) {
+            auto proc = node->processes.front();
+            node->processes.pop_front();
+            auto upperNode = node->next ? node->next : top;
+            upperNode->processes.push_back(proc);
+            if (node->processes.empty() && node != top) {
+                removeNode(node);
+            }
+        }
+        if (promotePointer->next) {
+            promotePointer = promotePointer->next;
+        } else {
+            promotePointer = top;
+        }
+    }
+
+    void split_n_merge() {
+        auto node = top;
+        while (node) {
+            if (node->processes.size() > THRESHOLD) {
+                auto it = node->processes.begin();
+                advance(it, node->processes.size() / 2);
+                auto upperNode = node->next ? node->next : top;
+                upperNode->processes.splice(upperNode->processes.end(), node->processes, node->processes.begin(), it);
+                if (node->processes.empty() && node != top) {
+                    removeNode(node);
+                }
+            }
+            node = node->next;
+        }
+    }
+
+    void removeNode(shared_ptr<StackNode> node) {
+        auto temp = top;
+        while (temp && temp->next != node) {
+            temp = temp->next;
+        }
+        if (temp) {
+            temp->next = node->next;
+        }
+    }
+};
+
+atomic<bool> running(true);
+ProcessStack processStack;
+
+void foregroundProcess() {
+    while (running) {
+        Process process = processStack.dequeue();
+        if (!process.name.empty()) {
+            cout << "Processing command: " << process.name << endl;
+            this_thread::sleep_for(chrono::seconds(1));
+        }
+    }
+}
+
+void backgroundProcess() {
+    while (running) {
+        this_thread::sleep_for(chrono::seconds(5)); // Monitor interval
+
+        cout << "Monitor: " << endl;
+        processStack.printStatus();
+    }
+}
+
+void userInputSimulator() {
+    vector<Process> commands = {
+        {"cmd1", true}, {"cmd2", false}, {"cmd3", true}, {"cmd4", false}, {"cmd5", true}
+    };
+
+    for (const auto& command : commands) {
+        this_thread::sleep_for(chrono::seconds(2)); // Simulate time between user inputs
+
+        processStack.enqueue(command);
+    }
+
+    this_thread::sleep_for(chrono::seconds(10)); // Allow some time for processing before shutting down
+    running = false;
+}
+
+int main() {
+    thread fgThread(foregroundProcess);
+    thread bgThread(backgroundProcess);
+    thread userInputThread(userInputSimulator);
+
+    userInputThread.join();
+    fgThread.join();
+    bgThread.join();
+
+    return 0;
+}

@@ -1,0 +1,177 @@
+2-2
+#include <iostream>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <chrono>
+#include <atomic>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <windows.h>
+
+using namespace std;
+
+mutex mtx;
+condition_variable cv;
+atomic<bool> running(true);
+int pid_counter = 0;
+
+struct Process {
+    int pid;
+    bool isForeground;
+    bool isPromoted;
+    int remainingSleepTime;
+
+    Process(int id, bool fg) : pid(id), isForeground(fg), isPromoted(false), remainingSleepTime(0) {}
+
+    string toString() const {
+        return to_string(pid) + (isForeground ? "F" : "B") + (isPromoted ? "*" : "");
+    }
+};
+
+queue<Process> dynamicQueue;
+queue<Process> waitQueue;
+
+// Function to simulate processing commands
+void foregroundProcess() {
+    while (running) {
+        unique_lock<mutex> lock(mtx);
+        cv.wait(lock, [] { return !dynamicQueue.empty() || !running; });
+
+        if (!running && dynamicQueue.empty()) break;
+
+        if (!dynamicQueue.empty()) {
+            Process proc = dynamicQueue.front();
+            dynamicQueue.pop();
+            lock.unlock();
+
+            // Process the command
+            cout << "Running: [" << proc.toString() << "]" << endl;
+
+            // Simulate processing time
+            this_thread::sleep_for(chrono::seconds(2));
+
+            // Simulate sleep time
+            lock.lock();
+            proc.remainingSleepTime = 5;
+            waitQueue.push(proc);
+        }
+    }
+}
+
+// Function to monitor the state of the queues
+void backgroundProcess() {
+    while (running) {
+        this_thread::sleep_for(chrono::seconds(5)); // Monitor interval
+
+        lock_guard<mutex> lock(mtx);
+
+        // Print Dynamic Queue state
+        cout << "---------------------------" << endl;
+        cout << "DQ: ";
+        if (dynamicQueue.empty()) {
+            cout << "[]";
+        } else {
+            cout << "P => [" << dynamicQueue.front().toString() << "]";
+            queue<Process> dqCopy = dynamicQueue;
+            dqCopy.pop();
+            while (!dqCopy.empty()) {
+                cout << " " << dqCopy.front().toString();
+                dqCopy.pop();
+            }
+        }
+        cout << " (bottom/top)" << endl;
+        cout << "---------------------------" << endl;
+
+        // Print Wait Queue state
+        cout << "WQ: [";
+        queue<Process> wqCopy = waitQueue;
+        bool first = true;
+        while (!wqCopy.empty()) {
+            if (!first) {
+                cout << " ";
+            }
+            first = false;
+            cout << wqCopy.front().toString() << ":" << wqCopy.front().remainingSleepTime;
+            wqCopy.pop();
+        }
+        cout << "]" << endl;
+    }
+}
+
+// Function to simulate user input commands
+void userInputSimulator() {
+    vector<string> commands = {"cmd1", "cmd2", "cmd3", "cmd4", "cmd5"};
+
+    for (const auto& command : commands) {
+        this_thread::sleep_for(chrono::seconds(2)); // Simulate time between user inputs
+
+        {
+            lock_guard<mutex> lock(mtx);
+            dynamicQueue.push(Process(pid_counter++, true));
+        }
+
+        cv.notify_one();
+    }
+
+    this_thread::sleep_for(chrono::seconds(10)); // Allow some time for processing before shutting down
+    running = false;
+    cv.notify_all();
+}
+
+// Function to parse command using std::istringstream
+char** parse(const char* command) {
+    istringstream iss(command);
+    vector<string> tokens;
+    string token;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+
+    char** args = new char*[tokens.size() + 1];
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        args[i] = new char[tokens[i].size() + 1];
+        strcpy_s(args[i], tokens[i].size() + 1, tokens[i].c_str());
+    }
+    args[tokens.size()] = new char[1];
+    args[tokens.size()][0] = '\0';
+
+    return args;
+}
+
+// Function to execute command using a new thread
+void exec(char** args) {
+    // Simulate executing a command in a new thread
+    thread([args] {
+        // Print the command being executed
+        for (int i = 0; args[i][0] != '\0'; ++i) {
+            cout << args[i] << " ";
+        }
+        cout << endl;
+
+        // Simulate command execution time
+        this_thread::sleep_for(chrono::seconds(2));
+
+        // Clean up allocated memory
+        for (int i = 0; args[i][0] != '\0'; ++i) {
+            delete[] args[i];
+        }
+        delete[] args;
+    }).detach();
+}
+
+int main() {
+    // Create and start the foreground and background processes
+    thread fgThread(foregroundProcess);
+    thread bgThread(backgroundProcess);
+    thread userInputThread(userInputSimulator);
+
+    // Wait for threads to complete
+    userInputThread.join();
+    fgThread.join();
+    bgThread.join();
+
+    return 0;
+}
